@@ -59,15 +59,15 @@ void setTPIC( uint8_t dat ){
 	CBI( PORTD, PUMP_DAT );
 }
 
+#define ADC_AVG_FACT 7		//Sample 2^N times and average result
 uint16_t getAdc( ){
-	uint16_t result=0;
-	for ( uint8_t x=0; x<64; x++ ){
+	uint32_t result=0;
+	for ( uint16_t x=0; x<(1<<ADC_AVG_FACT); x++ ){
 		SBI( ADCSRA, ADSC );
-		uint8_t x=0;
 		while( IBI(ADCSRA, ADSC) );
 		result += ADC;
 	}
-	return result;
+	return result>>ADC_AVG_FACT;
 }
 
 int main(){
