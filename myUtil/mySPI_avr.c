@@ -23,15 +23,6 @@
 // Init SPI and GPIO for nRF24 module
 //--------------------------------------------------
 void initSPI( void ){
-	SBI( DDRB, PB2 );						//OUT (SS) not used but SPI crashes otherwise
-	SBI( DDRB, PB3 );						//OUT (MOSI)
-	CBI( DDRB, PB4 );						//IN  (MISO)
-	SBI( DDRB, PB5 );						//OUT (SCK)
-	SBI( DDRB, nRF_PIN_VCC );				//OUT
-	SBI( PORTB, nRF_PIN_VCC );				//Power On module VCC
-	CBI( DDRB, nRF_PIN_IRQ );				//IN
-	SBI( DDRD, nRF_PIN_CNS );				//OUT
-	SBI( DDRD, nRF_PIN_EN );				//OUT
 	// Enable SPI, Master, set clock divider /4 = 2 MHz
 	SPCR = (1<<SPE)|(1<<MSTR)|(0<<SPR1)|(0<<SPR0);
 }

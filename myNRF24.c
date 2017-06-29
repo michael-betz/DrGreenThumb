@@ -23,12 +23,12 @@
 uint8_t cacheCONFIG;								//We cache the config register as global variable, so it does not need to be read over SPI each time it is changed
 
 void nRfInit(){	//Init with default config
-	const uint8_t rxTxAdr[5] = { 0xE0, 0xE7, 0xE7, 0xE7, 0xE7 };
+	const uint8_t rxTxAdr[5] = { 0xE2, 0xE7, 0xE7, 0xE7, 0xE7 };
     initSPI();
 	NRF_CE_OFF();
 	NRF_CHIP_DESELECT();
 	_delay_ms( 5 );
-	cacheCONFIG = 0b00001100;						//3xIRQs on, 16bit CRC, PDown, PTX mode
+	cacheCONFIG = 0b01111100;						//3xIRQs off, 16bit CRC, PDown, PTX mode
 	nRfWrite_register( CONFIG, 		cacheCONFIG );
 	nRfWrite_register( EN_AA,  		0b00111111 );	//Enable auto ACK on pipe0 - pipe5
 	nRfWrite_register( EN_RXADDR,	0b00000001 );	//Only enable data pipe ERX_P0 for the start
@@ -79,6 +79,7 @@ void nRfSetupRXPipe( uint8_t pipeNumber, uint8_t *rxAddr ){
 // len = 1 ... 32
 // if noAck == 1 then the sender will not wait for an ack packet, even if ack is enabled
 void nRfSendBytes( uint8_t *bytesToSend, uint8_t len, uint8_t noAck ){
+	nRfWrite_register( STATUS, (1<<TX_DS)|(1<<RX_DR)|(1<<MAX_RT) );	//Clear all interrupt flags
 	NRF_PWR_UP()
 	nRfWrite_payload( bytesToSend, len, noAck );
 	_delay_ms( 1 );									//Wait for Powerup
@@ -118,7 +119,7 @@ void nRfHandleISR(){
 	NRF_PWR_DOWN();
 }
 
-uint8_t nRfIsDataReady(){
+uint8_t nRfIsRxDataReady(){
 //	return( nRfGet_status()&(1<<RX_DR) );                      //Check interrupt flag
 	return( !(nRfRead_register(FIFO_STATUS)&(1<<RX_EMPTY)) );  //Check FIFO status
 }

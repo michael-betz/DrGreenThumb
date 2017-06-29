@@ -19,7 +19,7 @@ void nRfInit();
 void nRfInitTX();
 void nRfInitRX();
 void nRfSendBytes( uint8_t *bytesToSend, uint8_t len, uint8_t noAck );
-uint8_t nRfIsDataReady();
+uint8_t nRfIsRxDataReady();
 void nRfHandleISR();
 
 void nRfHexdump( void );
