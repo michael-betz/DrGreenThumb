@@ -22,6 +22,7 @@
 //--------------------------------------------------
 volatile uint8_t flags=0;
 
+
 void init(void) {
 	odDebugInit();
 	CBI( UCSR0B, RXEN0 );					// Disable UART RX
@@ -88,8 +89,23 @@ uint16_t getAdc( ){
 }
 
 void handle1HzTick(){
-	// rprintf(".");
-
+	static uint16_t remainingPumpTime;
+	if( IS_PUMP() ){
+		if( remainingPumpTime<=0 || IBI(flags,FLAG_PREQ_OFF) ){
+			remainingPumpTime = T_OFF;
+			PUMP_OFF();
+			rprintf("Pump Off for %d s\n", T_OFF );
+		}
+	} else {
+		if( remainingPumpTime<=0 || IBI(flags,FLAG_PREQ_ON) ){
+			remainingPumpTime = T_ON;
+			PUMP_ON();
+			rprintf("Pump On  for %d s\n", T_ON );
+		}
+	}
+	CBI(flags,FLAG_PREQ_ON);
+	CBI(flags,FLAG_PREQ_OFF);
+	remainingPumpTime--;
 }
 
 void hexdump( uint8_t *buffer, uint16_t len ){
@@ -113,11 +129,9 @@ void handleReceivedData(){
 	nRfRead_payload( recBuffer, nRec );
 	hexdump( recBuffer, nRec );
 	if( recBuffer[0] == 1 ){
-		PUMP_ON();
-		rprintf("Pump ON\n" );
+		SBI( flags, FLAG_PREQ_ON );
 	} else if( recBuffer[0] == 0 ){
-		PUMP_OFF();
-		rprintf("Pump Off\n" );
+		SBI( flags, FLAG_PREQ_OFF );
 	}
 }
 
@@ -132,17 +146,12 @@ void handle4HzTick(){
 	if( nRfIsRxDataReady() ){
 		handleReceivedData();
 	}
-	if( IS_PUMP() ){
-		if ( !IBI(PIND,PIN_BTN2) ) {
-			PUMP_OFF();
-			rprintf("Pump Off\n" );
-		}	
-	} else {
-		if( !IBI(PIND,PIN_BTN1) ){
-			PUMP_ON();
-			rprintf("Pump ON\n" );
-		}
-	}		
+	if( !IBI(PIND,PIN_BTN1) ){
+		SBI( flags, FLAG_PREQ_ON );
+	}
+	if( !IBI(PIND,PIN_BTN2) ){
+		SBI( flags, FLAG_PREQ_OFF );
+	}
 	if( t++ >= 3 ){
 		t = 0;
 		handle1HzTick();
@@ -151,6 +160,7 @@ void handle4HzTick(){
 
 int main(){
 	init();
+	setTPIC( 0 );
 	rprintf("\n\n---------------------------------------\n");
 	rprintf(" Hello world, this is DrGreenThumb ! \n");
 	rprintf("---------------------------------------\nGit: ");
@@ -165,10 +175,6 @@ int main(){
 		if( IBI(flags, FLAG_TICK) ){
 			handle4HzTick();
 			CBI(flags, FLAG_TICK);
-		}
-		if( IBI(flags, FLAG_RX) ){
-			handleReceivedData();
-			CBI(flags, FLAG_RX);
 		}
 	}
 	return 0;

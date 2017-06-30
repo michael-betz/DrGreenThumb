@@ -33,10 +33,13 @@
 // Constants
 #define TPIC_DELAY_US 	1
 #define ADC_AVG_FACT 	7		//Sample 2^N times and average result
+#define T_OFF			60*60*4	//Aquarium pump Off for 4 h
+#define T_ON			60*5	//Aquarium pump ON for 5 min
 
 // Flags
 #define FLAG_TICK		1		//250 ms tick
-#define FLAG_RX			2
+#define FLAG_PREQ_ON	2		//Requested to switch Pump ON
+#define FLAG_PREQ_OFF	3		//Requested to switch Pump Off
 
 // Pseudo functions
 #define SBI(reg, bit) ( reg |=  ( 1 << bit ) )
