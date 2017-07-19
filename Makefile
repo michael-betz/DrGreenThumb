@@ -2,9 +2,9 @@ TARGET      = drgreenthumb
 USB_SERIAL  = /dev/ttyUSB0
 MCU         = atmega328p
 F_CPU       = 16000000UL
-SRCS        = $(wildcard myUtil/*.c) $(wildcard *.c)
+SRCS        = $(wildcard myUtil/*.c) $(wildcard myUtil/1_wire/*.c) $(wildcard *.c)
 OBJS        = $(subst .c,.o,$(SRCS))
-INC         = -I. -ImyUtil
+INC         = -I. -ImyUtil -ImyUtil/1_wire
 GIT_VERSION = $(shell git describe --abbrev=4 --dirty --always --tags)
 TOOLS_PREFIX = avr-
 CC          = $(TOOLS_PREFIX)gcc
@@ -32,6 +32,14 @@ LDFLAGS += -Wl,--relax
 ## for smaller printf
 # LDFLAGS += -Wl,-u,vfprintf -lprintf_min
 
+all: clean $(TARGET).hex $(TARGET).lst bootload
+
+bootload: clean $(TARGET).hex
+	-pkill miniterm*
+	-pkill xterm*
+	avrdude -P $(USB_SERIAL) -b 57600 -c arduino -p atmega328p -U flash:w:$(TARGET).hex
+	xterm -fa monaco -fs 15 -bg black -fg green -hold -e "miniterm.py $(USB_SERIAL) 38400"&
+
 %.o: %.c
 	@echo -----------------------------------------------
 	@echo  Compiling $@
@@ -57,11 +65,6 @@ $(TARGET).elf: $(OBJS)
 	$(CC) -mmcu=$(MCU) $(LDFLAGS) -o $@ $^
 	chmod -x $@
 	$(TOOLS_PREFIX)size $@
-
-bootload: clean $(TARGET).hex
-	avrdude -P $(USB_SERIAL) -b 57600 -c arduino -p atmega328p -U flash:w:$(TARGET).hex
-
-all: clean $(TARGET).hex $(TARGET).lst
 
 clean:
 	rm -f $(TARGET).hex $(TARGET).lst $(TARGET).elf $(TARGET).map $(OBJS)

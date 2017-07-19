@@ -16,10 +16,18 @@ extern uint8_t cacheCONFIG;
 #define NRF_TX_MODE()  { CBI( cacheCONFIG, PRIM_RX); nRfWrite_register( CONFIG, cacheCONFIG ); }
 
 void nRfInit();
+void nRfInitProm( uint8_t addrLength );
 void nRfInitTX();
 void nRfInitRX();
-void nRfSendBytes( uint8_t *bytesToSend, uint8_t len, uint8_t noAck );
-uint8_t nRfIsRxDataReady();
+void nRfSendBytes( uint8_t *bytesToSend, uint8_t len, uint8_t *adr,  uint8_t noAck );
+void nRfSendAccPayload( uint8_t *bytesToSend, uint8_t len, uint8_t pipeNumber );
+uint8_t nRfIsDataSent();
+uint8_t nRfIsDataReceived();
+uint8_t nRfGetRetransmits();
+uint8_t nRfIsRXempty();
+uint8_t nRfIsTXempty();
+void nRfSetupRXPipe( uint8_t pipeNumber, uint8_t *rxAddr );
+uint8_t nRfgetPipeNo();
 void nRfHandleISR();
 
 void nRfHexdump( void );

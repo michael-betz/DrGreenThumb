@@ -10,7 +10,7 @@
 #include <inttypes.h>
 #include <avr/io.h>
 #include <util/delay.h>
-#include "rprintf.h"
+#include "debugPrint.h"
 #include "nRF24L01.h"
 #include "mySPI_avr.h"
 
@@ -83,13 +83,9 @@ uint8_t nRfWrite_register(uint8_t reg, uint8_t value){
 	return nRfWrite_transaction( W_REGISTER | ( REGISTER_MASK & reg ), &value, 1 );
 }
 
-//Write data payload, return status. If noAck == true: Ack function is deactivated for this packet
-uint8_t nRfWrite_payload( const void* buf, uint8_t len, uint8_t noAck ) {
-	if (noAck == 0){
-		return nRfWrite_transaction( W_TX_PAYLOAD, buf, len );
-	} else {
-		return nRfWrite_transaction( W_TX_PAYLOAD_NO_ACK, buf, len );
-	}
+//Do a command like W_TX_PAYLOAD, return status
+uint8_t nRfWrite_payload( const void* buf, uint8_t len, uint8_t command ) {
+  return nRfWrite_transaction( command, buf, len );
 }
 
 //Read data payload

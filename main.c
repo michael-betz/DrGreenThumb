@@ -13,18 +13,23 @@
 #include <util/delay.h>
 #include <avr/interrupt.h>
 #include "main.h"
-#include "rprintf.h"
+#include "millis.h"
+#include "debugPrint.h"
 #include "myNRF24.h"
 #include "mySPI_avr.h"
+#include "nRF24L01.h"
+#include "i2cmaster.h"
+#include "ds18b20.h"
 
 //--------------------------------------------------
 // Globals
 //--------------------------------------------------
 volatile uint8_t flags=0;
+uint8_t rxAddrs[5] = { 0xE2, 0xE7, 0xE7, 0xE7, 0xE7 };
 
 
 void init(void) {
-	odDebugInit();
+	debugInit();
 	CBI( UCSR0B, RXEN0 );					// Disable UART RX
 	//--------------------------------------------------
 	// GPIOs
@@ -33,21 +38,16 @@ void init(void) {
 	DDRD =  (1<<PIN_UART_TX) | (1<<PIN_PUMP_DAT) | (1<<PIN_PUMP_CLK) | (1<<PIN_DISP_RST)
 		  | (1<<PIN_DISP_DC) | (1<<PIN_DISP_CS)  | (1<<PIN_PUMP_DAT) | (1<<PIN_PUMP_CLK);
 	DDRB =  (1<<PIN_SS_REL)  | (1<<PIN_NRF_CSN)  | (1<<PIN_SPI_MOSI) | (1<<PIN_SPI_SCK);
-	DDRC =  (1<<PIN_NRF_CE)  | (1<<PIN_I2C_SDA)  | (1<<PIN_I2C_SDA);
-	// Enable weak pullups on button
-	PORTD = (1<<PIN_BTN1) | (1<<PIN_BTN2);
-	//--------------------------------------------------
-	// Timer0 for for a 250 ms tick
-	//--------------------------------------------------
-	TCCR0A = (1<<WGM01) | (1<<WGM00);		 //Fast PWM mode, no output
-	TCCR0B = (1<<WGM02) | (1<<CS02) | (0<<CS01) | (1<<CS00);//TOP=OCR0A, 1024 prescaler
-	OCR0A = 244;							 //Overvlow every 15.616 ms
-	TIMSK0 = (1<<TOIE0);
+	DDRC =  (1<<PIN_NRF_CE);
+	// Enable weak pullups on button and I2C lines
+	PORTC = (1<<PIN_I2C_SCL) | (1<<PIN_I2C_SDA);
+	PORTD = (1<<PIN_BTN1)    | (1<<PIN_BTN2);
 	//--------------------------------------------------
 	// ADC for PH level measurement
 	//--------------------------------------------------
 	ADCSRA = (1<<ADEN)  | 6;	// Enable ADC, fADC=fsys/64
-	ADMUX  = (1<<REFS0) | 6;	// AVcc reference, mux=ADC6
+	initMillis();
+	i2c_init();
 }
 
 void setTPIC( uint8_t dat ){
@@ -78,72 +78,156 @@ void setTPIC( uint8_t dat ){
 	CBI( PORTD, PIN_PUMP_DAT );
 }
 
-uint16_t getAdc( ){
+// Internal readADC routine, does n ADC readings (10 bit each) and returns the sum result
+// uint16_t readADC( uint8_t mux, uint8_t n ){
+// 	uint16_t result=0;
+// 	uint8_t i, sleepSave;
+// 	CBI( PRR, PRADC );											//Power UP
+// 	ADCSRA = (1<<ADEN)  | (1<<ADIE)  | 6; 						//fADC=fsys/64
+// 	ADMUX =  (1<<REFS0) | (mux & 0x0F);							//AVcc reference
+// 	CBI( TIMSK0, OCIE0A ); 										//Switch off timer interrupt which could cause preliminary wakeup
+// 	sleepSave = SMCR & 0x0F;									//Backup sleep mode register
+// 	SLEEP_SET_ADC();
+// 	for( i=0; i<n; i++ ){
+// 		// while( IBI(ADCSRA, ADSC) ){
+// 			SLEEP();			
+// 		// }
+// 		result += ADC;
+// 	}
+// 	SMCR = sleepSave;											//Restore sleep mode register
+// 	CBI( ADCSRA, ADEN );										//disable ADC
+// 	SBI( PRR, PRADC );											//Power DOWN
+// 	SBI( TIMSK0, OCIE0A ); 										//Switch timer interrupt back on
+// 	return result;
+// }
+// uint16_t getPh(){
+// 	return readADC( 6, (1<<ADC_AVG_FACT) );
+// }
+
+uint16_t getAdc(){
 	uint32_t result=0;
 	for ( uint16_t x=0; x<(1<<ADC_AVG_FACT); x++ ){
 		SBI( ADCSRA, ADSC );
 		while( IBI(ADCSRA, ADSC) );
 		result += ADC;
 	}
-	return result>>ADC_AVG_FACT;
+	return result;//>>ADC_AVG_FACT;
+}
+
+uint16_t getPh(){
+	ADMUX  = (1<<REFS0) | ADC_MUX_PH;	// AVcc reference, mux=ADC6
+	return getAdc();
+}
+
+uint16_t getTemp(){
+	ADMUX  = (1<<REFS1) | (1<<REFS0) | ADC_MUX_TEMP;	// AVcc reference, mux=ADC6
+	return getAdc();
+}
+
+typedef struct {
+	uint16_t seq;
+	uint16_t rawPhValue;
+	uint16_t rawTempValue;
+	uint8_t pumpRunning;
+	int16_t rawWaterTempValue;
+} drGtData;
+
+void reportStatusNRF(){
+	static uint16_t seq=0;
+	// uint8_t txAddrs[5] = { 0xE5, 0xE7, 0xE7, 0xE7, 0xE9 };
+	drGtData dat;
+
+	//Read temperature (without ROM matching)
+	ds18b20read( &PORTB, &DDRB, &PINB, (1<<PIN_1WIRE_DAT), 0, &dat.rawWaterTempValue );
+	//Start conversion (without ROM matching)
+	ds18b20convert( &PORTB, &DDRB, &PINB, (1<<PIN_1WIRE_DAT), 0 );
+
+	dat.rawPhValue = getPh();
+	dat.rawTempValue = getTemp();
+	dat.pumpRunning = IS_PUMP();
+	dat.seq = seq;
+	debug_str("TX: ");
+	hexDump( (uint8_t*)&dat, sizeof(dat) );
+	debug_str(" --> ");
+	nRfSendBytes( (uint8_t*)&dat, sizeof(dat), rxAddrs, 0 );
+	debug_str("\n");
+	seq++;
+}
+
+void everyMinute(){
+	SBI( flags, FLAG_REPORT_STATUS );
 }
 
 void handle1HzTick(){
 	static uint16_t remainingPumpTime;
-	if( IS_PUMP() ){
-		if( remainingPumpTime<=0 || IBI(flags,FLAG_PREQ_OFF) ){
-			remainingPumpTime = T_OFF;
-			PUMP_OFF();
-			rprintf("Pump Off for %d s\n", T_OFF );
+	static uint8_t minuteTick=0;
+	if( minuteTick++ >= 59 ){
+		minuteTick = 0;
+		everyMinute();
+	}
+	if( remainingPumpTime<=0 ){
+		if( IS_PUMP() ){
+			SBI(flags,FLAG_PREQ_OFF);
+		} else {
+			SBI(flags,FLAG_PREQ_ON);
 		}
 	} else {
-		if( remainingPumpTime<=0 || IBI(flags,FLAG_PREQ_ON) ){
-			remainingPumpTime = T_ON;
-			PUMP_ON();
-			rprintf("Pump On  for %d s\n", T_ON );
-		}
+		remainingPumpTime--;
+	}	
+	if( IBI( flags, FLAG_REPORT_STATUS ) ){		// Report status over nRF
+		reportStatusNRF();
+		CBI(flags,FLAG_REPORT_STATUS);
+	}	
+	if( IBI(flags,FLAG_PREQ_OFF) ){
+		remainingPumpTime = T_OFF;
+		PUMP_OFF();
+		debug_str("Pump Off for ");
+		debug_dec(T_OFF);
+		debug_str(" s\n");
+		SBI( flags, FLAG_REPORT_STATUS );	// Report pump status over nRF in 1 s
+		CBI( flags, FLAG_PREQ_OFF );
 	}
-	CBI(flags,FLAG_PREQ_ON);
-	CBI(flags,FLAG_PREQ_OFF);
-	remainingPumpTime--;
-}
-
-void hexdump( uint8_t *buffer, uint16_t len ){
-	rprintf("0x00:  ");
-	for( uint16_t x=0; x<len; x++){
-		rprintf( "%02x ", buffer[x] );
-		if( ((x+1)%8) == 0 ){
-			rprintf( "\n" );
-			rprintf( "0x%02x:  ", x+1);
-		}
+	if( IBI(flags,FLAG_PREQ_ON) ){
+		remainingPumpTime = T_ON;
+		PUMP_ON();
+		debug_str("Pump On for ");
+		debug_dec(T_ON);
+		debug_str(" s\n");
+		SBI( flags, FLAG_REPORT_STATUS );	// Report pump status over nRF in 1s
+		CBI( flags, FLAG_PREQ_ON );
 	}
-	rprintf("\n\n");
 }
 
 void handleReceivedData(){
-	uint8_t nRec, recBuffer[64];
-	nRec = nRfGet_RX_Payload_Width();
-	if( nRec<=0 || nRec>=64 ){
-		return;
-	}
-	nRfRead_payload( recBuffer, nRec );
-	hexdump( recBuffer, nRec );
-	if( recBuffer[0] == 1 ){
-		SBI( flags, FLAG_PREQ_ON );
-	} else if( recBuffer[0] == 0 ){
-		SBI( flags, FLAG_PREQ_OFF );
-	}
+   uint8_t nRec, recBuffer[64];
+   while( !nRfIsRXempty() ){
+		nRec = nRfGet_RX_Payload_Width();		
+		if( nRec<=0 || nRec>=64 ){
+			nRfWrite_register( STATUS, (1<<RX_DR) );//Clear Data ready flag	
+			return;
+		}
+		nRfRead_payload( recBuffer, nRec );
+		debug_str("RX: ");
+		hexDump( recBuffer, nRec );
+		debug_str("\n");
+		if( recBuffer[0] == 1 ){
+			SBI( flags, FLAG_PREQ_ON );
+		} else if( recBuffer[0] == 0 ){
+			SBI( flags, FLAG_PREQ_OFF );
+		}
+    }
+    nRfWrite_register( STATUS, (1<<RX_DR) );		//Clear Data ready flag	
 }
 
 void handle4HzTick(){
-	//Skip one tick every 6944 ticks to get 250 ms more precisely
-	static uint16_t nTicks=0;
 	static uint8_t t=0;
-	if( nTicks++ >= 6944 ){
-		nTicks = 0;
+	static uint32_t lastCallMs = 0;
+	uint32_t curMs = millis();
+	if( curMs-lastCallMs < 250 ){
 		return;
 	}
-	if( nRfIsRxDataReady() ){
+	lastCallMs = curMs;
+	if( nRfIsDataReceived() ){
 		handleReceivedData();
 	}
 	if( !IBI(PIND,PIN_BTN1) ){
@@ -158,34 +242,37 @@ void handle4HzTick(){
 	}
 }
 
+void myInitNrf(){
+    nRfInitRX();
+    nRfSetupRXPipe( 0, rxAddrs );
+    nRfFlush_tx();
+    nRfFlush_rx();
+    nRfWrite_register( STATUS, (1<<RX_DR) );		        //Clear Data ready flag
+    nRfHexdump();
+}
+
 int main(){
 	init();
 	setTPIC( 0 );
-	rprintf("\n\n---------------------------------------\n");
-	rprintf(" Hello world, this is DrGreenThumb ! \n");
-	rprintf("---------------------------------------\nGit: ");
-	rprintf( GIT_VERSION );
-	rprintf( "\n" );
-	nRfInitRX();
-	nRfHexdump();
-	sei();
+	debug_str("\n\n---------------------------------------\n");
+	debug_str(" Hello world, this is DrGreenThumb ! \n");
+	debug_str("---------------------------------------\nGit: ");
+	debug_str( GIT_VERSION );
+	debug_putc( '\n' );
 
+	myInitNrf();
+
+	// Set 1 wire temp sensor to 12 bit precission
+	ds18b20wsp( &PORTB, &DDRB, &PINB, (1<<PIN_1WIRE_DAT), 0, 0x00, 0xFF, DS18B20_RES12 );
+	ds18b20convert( &PORTB, &DDRB, &PINB, (1<<PIN_1WIRE_DAT), 0 );
+
+	sei();
 	// Main loop
 	while(1){
-		if( IBI(flags, FLAG_TICK) ){
-			handle4HzTick();
-			CBI(flags, FLAG_TICK);
-		}
+		handle4HzTick();
 	}
 	return 0;
 }
 
-volatile uint8_t intTickCounter = 0;
 
-ISR( TIMER0_OVF_vect ){				//Called every 15.616 ms
-	intTickCounter++;
-	if ( intTickCounter >= 16 ){
-		intTickCounter = 0;
-		SBI( flags, FLAG_TICK );	//Called every 249.9 ms
-	}
-}
+

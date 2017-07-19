@@ -23,7 +23,7 @@ uint8_t nRfRead_registers(uint8_t reg, uint8_t *buf, uint8_t len);
 uint8_t nRfRead_register( uint8_t reg );
 uint8_t nRfWrite_registers( uint8_t reg, const uint8_t* buf, uint8_t len );
 uint8_t nRfWrite_register(uint8_t reg, uint8_t value);
-uint8_t nRfWrite_payload( const void* buf, uint8_t len, uint8_t noAck );
+uint8_t nRfWrite_payload( const void* buf, uint8_t len, uint8_t command );
 uint8_t nRfRead_payload( void* buf, uint8_t len );
 uint8_t nRfFlush_rx(void);
 uint8_t nRfFlush_tx(void);
