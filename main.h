@@ -50,7 +50,7 @@
 #define IBI(reg, bit) 		( (reg&(1<<bit)) != 0 )
 #define PUMP_ON()			{ SBI( PORTB, PIN_SS_REL ); }
 #define PUMP_OFF()			{ CBI( PORTB, PIN_SS_REL ); }
-#define IS_PUMP()			IBI( PINB, PIN_SS_REL )
+#define IS_PUMP()			  IBI( PORTB, PIN_SS_REL )
 #define SLEEP()				{ asm volatile("sleep"); }
 #define SLEEP_SET_ADC()     { SMCR=0b00000011; }	//For ADC measurements
 #define SLEEP_SET_IDLE()    { SMCR=0b00000001; }	//When T0 still needs to run

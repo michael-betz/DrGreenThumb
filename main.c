@@ -20,6 +20,7 @@
 #include "nRF24L01.h"
 #include "i2cmaster.h"
 #include "ds18b20.h"
+#include "VL53L0X.h"
 
 //--------------------------------------------------
 // Globals
@@ -78,32 +79,6 @@ void setTPIC( uint8_t dat ){
 	CBI( PORTD, PIN_PUMP_DAT );
 }
 
-// Internal readADC routine, does n ADC readings (10 bit each) and returns the sum result
-// uint16_t readADC( uint8_t mux, uint8_t n ){
-// 	uint16_t result=0;
-// 	uint8_t i, sleepSave;
-// 	CBI( PRR, PRADC );											//Power UP
-// 	ADCSRA = (1<<ADEN)  | (1<<ADIE)  | 6; 						//fADC=fsys/64
-// 	ADMUX =  (1<<REFS0) | (mux & 0x0F);							//AVcc reference
-// 	CBI( TIMSK0, OCIE0A ); 										//Switch off timer interrupt which could cause preliminary wakeup
-// 	sleepSave = SMCR & 0x0F;									//Backup sleep mode register
-// 	SLEEP_SET_ADC();
-// 	for( i=0; i<n; i++ ){
-// 		// while( IBI(ADCSRA, ADSC) ){
-// 			SLEEP();			
-// 		// }
-// 		result += ADC;
-// 	}
-// 	SMCR = sleepSave;											//Restore sleep mode register
-// 	CBI( ADCSRA, ADEN );										//disable ADC
-// 	SBI( PRR, PRADC );											//Power DOWN
-// 	SBI( TIMSK0, OCIE0A ); 										//Switch timer interrupt back on
-// 	return result;
-// }
-// uint16_t getPh(){
-// 	return readADC( 6, (1<<ADC_AVG_FACT) );
-// }
-
 uint16_t getAdc(){
 	uint32_t result=0;
 	for ( uint16_t x=0; x<(1<<ADC_AVG_FACT); x++ ){
@@ -130,20 +105,22 @@ typedef struct {
 	uint16_t rawTempValue;
 	uint8_t pumpRunning;
 	int16_t rawWaterTempValue;
+	uint16_t waterLevel;
 } drGtData;
 
 void reportStatusNRF(){
 	static uint16_t seq=0;
 	// uint8_t txAddrs[5] = { 0xE5, 0xE7, 0xE7, 0xE7, 0xE9 };
 	drGtData dat;
-
-	//Read temperature (without ROM matching)
+	//Read water temperature (over 1-wire without ROM matching)
 	ds18b20read( &PORTB, &DDRB, &PINB, (1<<PIN_1WIRE_DAT), 0, &dat.rawWaterTempValue );
-	//Start conversion (without ROM matching)
-	ds18b20convert( &PORTB, &DDRB, &PINB, (1<<PIN_1WIRE_DAT), 0 );
-
+	// Get water level from TOF distance sensor over I2C
+	dat.waterLevel = readRangeContinuousMillimeters( 0 );
+	// Get PH-level from ADC
 	dat.rawPhValue = getPh();
+	// Get AVR temp. from ADC
 	dat.rawTempValue = getTemp();
+	// Get pump status from GPIO
 	dat.pumpRunning = IS_PUMP();
 	dat.seq = seq;
 	debug_str("TX: ");
@@ -159,7 +136,7 @@ void everyMinute(){
 }
 
 void handle1HzTick(){
-	static uint16_t remainingPumpTime;
+	static uint16_t remainingPumpTime=0;
 	static uint8_t minuteTick=0;
 	if( minuteTick++ >= 59 ){
 		minuteTick = 0;
@@ -173,11 +150,15 @@ void handle1HzTick(){
 		}
 	} else {
 		remainingPumpTime--;
-	}	
+	}
+
 	if( IBI( flags, FLAG_REPORT_STATUS ) ){		// Report status over nRF
 		reportStatusNRF();
 		CBI(flags,FLAG_REPORT_STATUS);
-	}	
+	}
+	//Start water temperature conversion (over 1-wire without ROM matching)
+	ds18b20convert( &PORTB, &DDRB, &PINB, (1<<PIN_1WIRE_DAT), 0 );
+
 	if( IBI(flags,FLAG_PREQ_OFF) ){
 		remainingPumpTime = T_OFF;
 		PUMP_OFF();
@@ -265,6 +246,11 @@ int main(){
 	// Set 1 wire temp sensor to 12 bit precission
 	ds18b20wsp( &PORTB, &DDRB, &PINB, (1<<PIN_1WIRE_DAT), 0, 0x00, 0xFF, DS18B20_RES12 );
 	ds18b20convert( &PORTB, &DDRB, &PINB, (1<<PIN_1WIRE_DAT), 0 );
+
+	// Initialize TOF distance sensor for water level measurement
+	initVL53L0X(1);
+	setMeasurementTimingBudget( 3000 * 1000UL );	// integrate over 3000 ms per measurement
+	startContinuous( 0 );
 
 	sei();
 	// Main loop
