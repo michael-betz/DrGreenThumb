@@ -25,9 +25,10 @@
 //--------------------------------------------------
 // Globals
 //--------------------------------------------------
-volatile uint8_t flags=0;
+volatile uint8_t g_flags=0;
 uint8_t rxAddrs[5] = { 0xE2, 0xE7, 0xE7, 0xE7, 0xE7 };
-
+int16_t g_currentWaterLevel=0;
+uint8_t g_dosingCounter = 0;
 
 void init(void) {
 	debugInit();
@@ -103,7 +104,7 @@ typedef struct {
 	uint16_t seq;
 	uint16_t rawPhValue;
 	uint16_t rawTempValue;
-	uint8_t pumpRunning;
+	uint8_t flags;
 	int16_t rawWaterTempValue;
 	uint16_t waterLevel;
 } drGtData;
@@ -115,13 +116,14 @@ void reportStatusNRF(){
 	//Read water temperature (over 1-wire without ROM matching)
 	ds18b20read( &PORTB, &DDRB, &PINB, (1<<PIN_1WIRE_DAT), 0, &dat.rawWaterTempValue );
 	// Get water level from TOF distance sensor over I2C
-	dat.waterLevel = readRangeContinuousMillimeters( 0 );
+	// dat.waterLevel = readRangeContinuousMillimeters( 0 );
+	dat.waterLevel = (uint16_t)g_currentWaterLevel;
 	// Get PH-level from ADC
 	dat.rawPhValue = getPh();
 	// Get AVR temp. from ADC
 	dat.rawTempValue = getTemp();
 	// Get pump status from GPIO
-	dat.pumpRunning = IS_PUMP();
+	dat.flags = (IS_PUMP()<<FLAG_IS_PUMP) | g_flags;
 	dat.seq = seq;
 	debug_str("TX: ");
 	hexDump( (uint8_t*)&dat, sizeof(dat) );
@@ -132,7 +134,22 @@ void reportStatusNRF(){
 }
 
 void everyMinute(){
-	SBI( flags, FLAG_REPORT_STATUS );
+	SBI( g_flags, FLAG_REPORT_STATUS );
+}
+
+/**
+*  @details    Implement a first order IIR filter to approximate a K sample 
+*              moving average.  This function implements the equation:
+*                  y[n] = alpha * x[n] + (1 - alpha) * y[n-1]
+*  @param      sample - the 16-bit value of the current sample.
+*/
+#define WATER_LEVEL_FILTER_NAVG 	5  	// This is roughly = log2( 1 / alpha )
+#define WATER_LEVEL_FILTER_N_FRACT  5	// How many fractional bits (to get correct result, float-divide g_currentWaterLevel by 2^N)
+void waterLevelFilter( int16_t sample ){
+    static int32_t filter = 0;
+    filter += ( ((int32_t)sample<<16) - filter ) >> WATER_LEVEL_FILTER_NAVG;
+    ///< Round by adding .5 and truncating.
+    g_currentWaterLevel = (int16_t)((filter+(0x8000>>WATER_LEVEL_FILTER_N_FRACT)) >> (16-WATER_LEVEL_FILTER_N_FRACT) );
 }
 
 void handle1HzTick(){
@@ -144,39 +161,65 @@ void handle1HzTick(){
 	}
 	if( remainingPumpTime<=0 ){
 		if( IS_PUMP() ){
-			SBI(flags,FLAG_PREQ_OFF);
+			SBI(g_flags,FLAG_PREQ_OFF);
 		} else {
-			SBI(flags,FLAG_PREQ_ON);
+			SBI(g_flags,FLAG_PREQ_ON);
 		}
 	} else {
 		remainingPumpTime--;
 	}
-
-	if( IBI( flags, FLAG_REPORT_STATUS ) ){		// Report status over nRF
+	
+	//Average water level every second (for 60 seconds until transmission)
+	waterLevelFilter( (int16_t)readRangeContinuousMillimeters(0) );
+	// waterLevelFilter( (int16_t)100 );
+	// debug_str("Water: ");
+	// debug_dec( g_currentWaterLevel );
+	// debug_str("\n");
+	
+	if( IBI( g_flags, FLAG_REPORT_STATUS ) ){		// Report status over nRF
 		reportStatusNRF();
-		CBI(flags,FLAG_REPORT_STATUS);
+		CBI(g_flags,FLAG_REPORT_STATUS);
 	}
+	
 	//Start water temperature conversion (over 1-wire without ROM matching)
 	ds18b20convert( &PORTB, &DDRB, &PINB, (1<<PIN_1WIRE_DAT), 0 );
 
-	if( IBI(flags,FLAG_PREQ_OFF) ){
+	if( IBI(g_flags,FLAG_PREQ_OFF) ){
 		remainingPumpTime = T_OFF;
 		PUMP_OFF();
 		debug_str("Pump Off for ");
 		debug_dec(T_OFF);
 		debug_str(" s\n");
-		SBI( flags, FLAG_REPORT_STATUS );	// Report pump status over nRF in 1 s
-		CBI( flags, FLAG_PREQ_OFF );
+		SBI( g_flags, FLAG_REPORT_STATUS );	// Report pump status over nRF in 1 s
+		CBI( g_flags, FLAG_PREQ_OFF );
 	}
-	if( IBI(flags,FLAG_PREQ_ON) ){
+	if( IBI(g_flags,FLAG_PREQ_ON) ){
 		remainingPumpTime = T_ON;
 		PUMP_ON();
 		debug_str("Pump On for ");
 		debug_dec(T_ON);
 		debug_str(" s\n");
-		SBI( flags, FLAG_REPORT_STATUS );	// Report pump status over nRF in 1s
-		CBI( flags, FLAG_PREQ_ON );
+		SBI( g_flags, FLAG_REPORT_STATUS );	// Report pump status over nRF in 1s
+		CBI( g_flags, FLAG_PREQ_ON );
 	}
+}
+
+void dosingPulse( uint8_t outputId, uint8_t pulseLength ){
+	if (outputId > 6){
+		return;
+	}
+	if (pulseLength<=0){
+		return;
+	}
+	g_dosingCounter = pulseLength;
+	setTPIC( 1<<outputId );
+	SBI( g_flags, FLAG_IS_DOSING );
+	debug_str("Dosing for ");
+	debug_dec_fix( pulseLength, 2 );
+	debug_str(" seconds on output ");
+	debug_dec( outputId );
+	debug_putc('\n');
+	SBI( g_flags, FLAG_REPORT_STATUS );			// Report status over nRF in 1s
 }
 
 void handleReceivedData(){
@@ -191,10 +234,21 @@ void handleReceivedData(){
 		debug_str("RX: ");
 		hexDump( recBuffer, nRec );
 		debug_str("\n");
-		if( recBuffer[0] == 1 ){
-			SBI( flags, FLAG_PREQ_ON );
-		} else if( recBuffer[0] == 0 ){
-			SBI( flags, FLAG_PREQ_OFF );
+		switch (recBuffer[0]){
+			case 0:
+				// Pump Off command
+				SBI( g_flags, FLAG_PREQ_OFF );
+			break;
+			case 1:
+				// Pump On command
+				SBI( g_flags, FLAG_PREQ_ON );
+			break;
+			case 2:
+				// Dosing Pump command <pumpId> <pulseLength[s/4]>
+				if (nRec == 3){
+					dosingPulse( recBuffer[1], recBuffer[2] );
+				}
+			break;
 		}
     }
     nRfWrite_register( STATUS, (1<<RX_DR) );		//Clear Data ready flag	
@@ -212,10 +266,20 @@ void handle4HzTick(){
 		handleReceivedData();
 	}
 	if( !IBI(PIND,PIN_BTN1) ){
-		SBI( flags, FLAG_PREQ_ON );
+		SBI( g_flags, FLAG_PREQ_ON );
 	}
 	if( !IBI(PIND,PIN_BTN2) ){
-		SBI( flags, FLAG_PREQ_OFF );
+		SBI( g_flags, FLAG_PREQ_OFF );
+	}
+	if( IBI( g_flags, FLAG_IS_DOSING ) ){
+		if ( g_dosingCounter > 0 ) {
+			g_dosingCounter--;
+		} else {
+			setTPIC( 0 );
+			CBI( g_flags, FLAG_IS_DOSING );
+			debug_str("Dosing finished\n");
+			SBI( g_flags, FLAG_REPORT_STATUS );				// Report status over nRF in 1s
+		}
 	}
 	if( t++ >= 3 ){
 		t = 0;
@@ -249,7 +313,7 @@ int main(){
 
 	// Initialize TOF distance sensor for water level measurement
 	initVL53L0X(1);
-	setMeasurementTimingBudget( 3000 * 1000UL );	// integrate over 3000 ms per measurement
+	setMeasurementTimingBudget( 900 * 1000UL );	// integrate over 900 ms per measurement
 	startContinuous( 0 );
 
 	sei();

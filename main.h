@@ -43,6 +43,8 @@
 #define FLAG_PREQ_ON		0		//Requested to switch Pump ON
 #define FLAG_PREQ_OFF		1		//Requested to switch Pump Off
 #define FLAG_REPORT_STATUS 	2		//Report status over nRF24
+#define FLAG_IS_DOSING		3		//A dosing pump is running
+#define FLAG_IS_PUMP		4		//Main pump is running (reserved zero, only for report status)
 
 // Pseudo functions
 #define SBI(reg, bit) 		( reg |=  ( 1 << bit ) )
