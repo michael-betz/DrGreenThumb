@@ -38,6 +38,7 @@
 #define ADC_MUX_TEMP	8
 #define T_OFF			60*60*4	//Aquarium pump Off for 4 h
 #define T_ON			60*5	//Aquarium pump ON for 5 min
+#define DOSING_CHANNELS 7
 
 // Flags
 #define FLAG_PREQ_ON		0		//Requested to switch Pump ON
@@ -45,6 +46,7 @@
 #define FLAG_REPORT_STATUS 	2		//Report status over nRF24
 #define FLAG_IS_DOSING		3		//A dosing pump is running
 #define FLAG_IS_PUMP		4		//Main pump is running (reserved zero, only for report status)
+#define FLAG_IS_RECIPE		5		//A recipe sequence is running
 
 // Pseudo functions
 #define SBI(reg, bit) 		( reg |=  ( 1 << bit ) )

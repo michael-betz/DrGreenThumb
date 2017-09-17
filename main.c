@@ -29,6 +29,8 @@ volatile uint8_t g_flags=0;
 uint8_t rxAddrs[5] = { 0xE2, 0xE7, 0xE7, 0xE7, 0xE7 };
 int16_t g_currentWaterLevel=0;
 uint8_t g_dosingCounter = 0;
+uint8_t g_recipePulseLengths[ DOSING_CHANNELS ];
+uint8_t g_recipeCurrentId = 0;
 
 void init(void) {
 	debugInit();
@@ -169,14 +171,11 @@ void handle1HzTick(){
 		remainingPumpTime--;
 	}
 	
-	//Average water level every second (for 60 seconds until transmission)
+	// Update water level moving average every second
 	waterLevelFilter( (int16_t)readRangeContinuousMillimeters(0) );
-	// waterLevelFilter( (int16_t)100 );
-	// debug_str("Water: ");
-	// debug_dec( g_currentWaterLevel );
-	// debug_str("\n");
 	
-	if( IBI( g_flags, FLAG_REPORT_STATUS ) ){		// Report status over nRF
+	// Report status over nRF if requested
+	if( IBI( g_flags, FLAG_REPORT_STATUS ) ){
 		reportStatusNRF();
 		CBI(g_flags,FLAG_REPORT_STATUS);
 	}
@@ -204,11 +203,14 @@ void handle1HzTick(){
 	}
 }
 
+// Enable a TPIC output for `pulseLength` in [1/4 s]
 void dosingPulse( uint8_t outputId, uint8_t pulseLength ){
-	if (outputId > 6){
+	setTPIC( 0 );
+	CBI( g_flags, FLAG_IS_DOSING );
+	if ( outputId > 7 ){
 		return;
 	}
-	if (pulseLength<=0){
+	if ( pulseLength <= 0 ){
 		return;
 	}
 	g_dosingCounter = pulseLength;
@@ -219,7 +221,40 @@ void dosingPulse( uint8_t outputId, uint8_t pulseLength ){
 	debug_str(" seconds on output ");
 	debug_dec( outputId );
 	debug_putc('\n');
-	SBI( g_flags, FLAG_REPORT_STATUS );			// Report status over nRF in 1s
+	// SBI( g_flags, FLAG_REPORT_STATUS );			// Report status over nRF in 1s
+}
+
+// Starts the recipe state machine which will go through a list of 7 dosing pulse length values
+void startDosingRecipe( uint8_t *dosingPulseLengths ){
+	//dosingPulseLengths = 7 * uint8_t [1/4s]
+	dosingPulse( 0, 0 ); 	//Disable any dosing in progress
+	// Copy recipe to global array
+	for (uint8_t i = 0; i<DOSING_CHANNELS; i++){
+		g_recipePulseLengths[i] = dosingPulseLengths[i];
+	}
+	// Initialize and start recipe state machine
+	g_recipeCurrentId = 0;
+	SBI( g_flags, FLAG_IS_RECIPE );
+}
+
+void handleDosingStateMachine(){
+	// must be called periodically (every 0.25s)
+	// If no recipe is in progress, return
+	if( !IBI( g_flags, FLAG_IS_RECIPE ) ){
+		return;
+	}	
+	// If a dosing pulse is in progress, return
+	if( IBI( g_flags, FLAG_IS_DOSING ) ){
+		return;
+	}
+	if( g_recipeCurrentId < DOSING_CHANNELS ){
+		// We should start a new dosing pulse
+		dosingPulse( g_recipeCurrentId, g_recipePulseLengths[ g_recipeCurrentId ] );
+		g_recipeCurrentId++;
+	} else {
+		// We are done with the recipe
+		CBI( g_flags, FLAG_IS_RECIPE );
+	}
 }
 
 void handleReceivedData(){
@@ -246,7 +281,15 @@ void handleReceivedData(){
 			case 2:
 				// Dosing Pump command <pumpId> <pulseLength[s/4]>
 				if (nRec == 3){
+					// Cancel any dosing recipe in progress
+					CBI( g_flags, FLAG_IS_RECIPE );
 					dosingPulse( recBuffer[1], recBuffer[2] );
+				}
+			break;
+			case 3:
+				// Dosing recipe command 7 x <pulseLength[s/4]>
+				if (nRec == DOSING_CHANNELS+1){
+					startDosingRecipe( &recBuffer[1] );
 				}
 			break;
 		}
@@ -272,15 +315,17 @@ void handle4HzTick(){
 		SBI( g_flags, FLAG_PREQ_OFF );
 	}
 	if( IBI( g_flags, FLAG_IS_DOSING ) ){
+		SBI( g_flags, FLAG_REPORT_STATUS );				// Report status over nRF every 1s
 		if ( g_dosingCounter > 0 ) {
 			g_dosingCounter--;
+			// debug_str(".");
 		} else {
 			setTPIC( 0 );
 			CBI( g_flags, FLAG_IS_DOSING );
 			debug_str("Dosing finished\n");
-			SBI( g_flags, FLAG_REPORT_STATUS );				// Report status over nRF in 1s
 		}
 	}
+	handleDosingStateMachine();
 	if( t++ >= 3 ){
 		t = 0;
 		handle1HzTick();
